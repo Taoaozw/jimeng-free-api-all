@@ -1,0 +1,20 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    image: jimeng-free-api-all:local
+    container_name: jimeng-free-api-all
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8000"
+    env_file:
+      - .local/account.env
+    environment:
+      TZ: Asia/Shanghai
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "2"

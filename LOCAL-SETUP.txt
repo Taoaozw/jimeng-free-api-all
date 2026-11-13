@@ -1,0 +1,39 @@
+Local Dreamina proxy
+
+Base URL: http://127.0.0.1:8001/v1
+Client API key: .local/client.env (OPENAI_API_KEY)
+Account credential: .local/account.env (private; never commit or share)
+Region: jp
+Source: https://github.com/lfglfg11/jimeng-free-api-all
+
+Run commands from this directory:
+  docker compose -f compose.local.yaml up -d --build
+  docker compose -f compose.local.yaml stop
+  curl --config .local/curl.conf http://127.0.0.1:8001/v1/models
+  curl --config .local/curl.conf -d "{}" http://127.0.0.1:8001/token/points
+
+Verified: build, API key enforcement, model listing, live account credit query.
+Verified generation: jimeng-4.5 images; jimeng-video-3.0 (720p, 5 seconds); jimeng-video-seedance-2.5 text-to-video (720p, 5 seconds, audio). Seedance 2.5 took 167.6 seconds and consumed 240 credits. Additional verified Seedance 2.5 cases are listed below. The local image includes Chromium and its system dependencies for browser-based video paths.
+If the Dreamina session expires, refresh JIMENG_ACCOUNT_TOKEN from the logged-in browser, retain the jp- prefix, and recreate the container.
+
+Seedance 2.5 synchronous API
+  POST /v1/videos/generations (JSON)
+  {"model":"jimeng-video-seedance-2.5","prompt":"A paper boat on a quiet pond","ratio":"16:9","resolution":"4k","duration":5,"response_format":"url"}
+  Resolutions accepted by the adapter: 480p, 720p, 1080p, 4k (case-insensitive for 2.5).
+  Durations accepted by the adapter: integer seconds from 4 through 30.
+  Ratios accepted: 1:1, 4:3, 3:4, 16:9, 9:16, 21:9.
+  Optional file_paths (or filePaths): one image URL for the first frame, two for first/end frames. This is not Omni reference.
+  Optional seed: unsigned 32-bit integer, including 0; omitted means random.
+  response_format: url or b64_json; the latter returns data[0].b64_json.
+  Image inputs also accept data URLs. Upload failures stop generation.
+  More than two images are rejected. Two images keep the selected 2.5 model.
+  The public gateway accepts JSON image URLs; it does not expose a standalone upload API, multipart upload, or the proxy's international/async routes.
+  Website capabilities not yet adapted for 2.5: up to 50 mixed image/video/audio references, editing/extension modes, 30-180 second Long video, asset-library management, Draft/Flash model selection.
+  Regression tests: node --test tests/seedance25.test.cjs
+  Tests mock upstream submission; live generation coverage is recorded separately below.
+
+Verified generation coverage (2026-11-14):
+  Text-to-video: 4K, 5 seconds; inspected MP4 is 3840 x 2160, 5.017 seconds.
+  First/end frames: 480p, 4 seconds, seed=0, Base64 response; inspected MP4 is 854 x 480, 4.065 seconds.
+  Both completed with HTTP 200 and successful gateway usage records.
+  A full 30-second or 21:9 production generation has not been run; parameter mapping and boundaries are covered by mocked regression tests.

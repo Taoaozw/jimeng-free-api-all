@@ -61,6 +61,7 @@ class BrowserService {
       logger.info("BrowserService: 正在启动 Chromium 浏览器...");
       try {
         this.browser = await chromium.launch({
+          executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
           headless: true,
           args: [
             "--no-sandbox",

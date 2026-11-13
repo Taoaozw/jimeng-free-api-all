@@ -21,6 +21,26 @@ class Server {
 
     constructor() {
         this.app = new Koa();
+        const accountToken = process.env.JIMENG_ACCOUNT_TOKEN;
+        const apiKey = process.env.JIMENG_API_KEY;
+        if (Boolean(accountToken) !== Boolean(apiKey)) {
+            throw new Error('JIMENG_ACCOUNT_TOKEN and JIMENG_API_KEY must be configured together');
+        }
+        this.app.use(async (ctx: any, next: Function) => {
+            if (accountToken) {
+                if (ctx.get('authorization') !== `Bearer ${apiKey}`) {
+                    ctx.status = 401;
+                    ctx.body = { error: 'Invalid API key' };
+                    return;
+                }
+                // Keep the browser credential private while callers use a separate local key.
+                ctx.req.headers.authorization = `Bearer ${accountToken}`;
+            }
+            await next();
+            if (accountToken && ctx.path === '/token/points' && Array.isArray(ctx.body)) {
+                ctx.body = ctx.body.map(({ token, ...item }: any) => item);
+            }
+        });
         this.app.use(koaCors());
         // 范围请求支持
         this.app.use(koaRange);

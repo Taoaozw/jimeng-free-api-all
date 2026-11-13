@@ -1,4 +1,5 @@
 dist/
+.local/
 node_modules/
 logs/
 .vercel
@@ -38,3 +39,6 @@ hk-tokens.json
 .omc/
 # Claude local settings
 .claude/
+
+.tmp/
+.tmp-*.log

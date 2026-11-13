@@ -9,6 +9,12 @@ export default {
             return {
                 "data": [
                     {
+                        "id": "jimeng-video-seedance-2.5",
+                        "object": "model",
+                        "owned_by": "jimeng-free-api",
+                        "description": "Dreamina Seedance 2.5; 480p/720p/1080p/4k, 4-30 seconds, optional first/end frames and seed"
+                    },
+                    {
                         "id": "jimeng",
                         "object": "model",
                         "owned_by": "jimeng-free-api"

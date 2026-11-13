@@ -30,8 +30,17 @@ export default {
                 .validate('body.prompt', v => _.isUndefined(v) || _.isString(v))
                 .validate('body.ratio', v => _.isUndefined(v) || _.isString(v))
                 .validate('body.resolution', v => _.isUndefined(v) || _.isString(v))
+                .validate('body.seed', v => {
+                    if (_.isUndefined(v)) return true;
+                    const num = isMultiPart && typeof v === 'string' ? Number(v) : v;
+                    return request.body.model === 'jimeng-video-seedance-2.5' && Number.isInteger(num) && num >= 0 && num <= 4294967295;
+                })
                 .validate('body.duration', v => {
                     if (_.isUndefined(v)) return true;
+                    if (request.body.model === 'jimeng-video-seedance-2.5') {
+                        const num = isMultiPart && typeof v === 'string' ? Number(v) : v;
+                        return Number.isInteger(num) && num >= 4 && num <= 30;
+                    }
                     // 对于 multipart/form-data，允许字符串类型的数字
                     if (isMultiPart && typeof v === 'string') {
                         const num = parseInt(v);
@@ -58,6 +67,7 @@ export default {
                 ratio = "1:1",
                 resolution = "720p",
                 duration = 5,
+                seed,
                 file_paths = [],
                 filePaths = [],
                 response_format = "url"
@@ -65,7 +75,7 @@ export default {
 
             // 如果是 multipart/form-data，需要将字符串转换为数字
             const finalDuration = isMultiPart && typeof duration === 'string'
-                ? parseInt(duration)
+                ? (model === 'jimeng-video-seedance-2.5' ? Number(duration) : parseInt(duration))
                 : duration;
 
             // 兼容两种参数名格式：file_paths 和 filePaths
@@ -100,6 +110,7 @@ export default {
                         ratio,
                         resolution,
                         duration: finalDuration,
+                        seed: seed === undefined ? undefined : Number(seed),
                         filePaths: finalFilePaths,
                         files: request.files,
                     },

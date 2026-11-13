@@ -16,6 +16,7 @@ export const DEFAULT_MODEL = "jimeng-video-3.0";
 const DEFAULT_DRAFT_VERSION = "3.2.8";
 
 const MODEL_DRAFT_VERSIONS: { [key: string]: string } = {
+  "jimeng-video-seedance-2.5": "3.3.20",
   "jimeng-video-3.5-pro": "3.3.4",
   "jimeng-video-3.0-pro": "3.2.8",
   "jimeng-video-3.0": "3.2.8",
@@ -37,6 +38,7 @@ const MODEL_DRAFT_VERSIONS: { [key: string]: string } = {
 };
 
 const MODEL_MAP = {
+  "jimeng-video-seedance-2.5": "dreamina_seedance_45_pro",
   "jimeng-video-3.5-pro": "dreamina_ic_generate_video_model_vgfm_3.5_pro",
   "jimeng-video-3.0-pro": "dreamina_ic_generate_video_model_vgfm_3.0_pro",
   "jimeng-video-3.0": "dreamina_ic_generate_video_model_vgfm_3.0",
@@ -97,6 +99,8 @@ const INTERNATIONAL_SEEDANCE_BENEFIT_TYPE_MAP: Record<string, string> = {
 
 // 判断是否为 Seedance 模型
 export function isSeedanceModel(model: string): boolean {
+  // Seedance 2.5 uses the standard video draft instead of the 2.0 reference-only flow.
+  if (model === "jimeng-video-seedance-2.5") return false;
   return model.startsWith("seedance-") || model.startsWith("jimeng-video-seedance-");
 }
 
@@ -189,6 +193,7 @@ const VIDEO_RESOLUTION_OPTIONS: {
   };
 } = {
   "480p": {
+    "21:9": { width: 1120, height: 480 },
     "1:1": { width: 480, height: 480 },
     "4:3": { width: 640, height: 480 },
     "3:4": { width: 480, height: 640 },
@@ -196,6 +201,7 @@ const VIDEO_RESOLUTION_OPTIONS: {
     "9:16": { width: 480, height: 854 },
   },
   "720p": {
+    "21:9": { width: 1680, height: 720 },
     "1:1": { width: 720, height: 720 },
     "4:3": { width: 960, height: 720 },
     "3:4": { width: 720, height: 960 },
@@ -203,11 +209,20 @@ const VIDEO_RESOLUTION_OPTIONS: {
     "9:16": { width: 720, height: 1280 },
   },
   "1080p": {
+    "21:9": { width: 2520, height: 1080 },
     "1:1": { width: 1080, height: 1080 },
     "4:3": { width: 1440, height: 1080 },
     "3:4": { width: 1080, height: 1440 },
     "16:9": { width: 1920, height: 1080 },
     "9:16": { width: 1080, height: 1920 },
+  },
+  "4k": {
+    "21:9": { width: 5040, height: 2160 },
+    "1:1": { width: 2160, height: 2160 },
+    "4:3": { width: 2880, height: 2160 },
+    "3:4": { width: 2160, height: 2880 },
+    "16:9": { width: 3840, height: 2160 },
+    "9:16": { width: 2160, height: 3840 },
   },
 };
 
@@ -1174,18 +1189,34 @@ export async function generateVideo(
     ratio = "1:1",
     resolution = "720p",
     duration = 5,
+    seed,
     filePaths = [],
     files = [],
   }: {
     ratio?: string;
     resolution?: string;
     duration?: number;
+    seed?: number;
     filePaths?: string[];
     files?: any[];
   },
   refreshToken: string
 ) {
   const model = getModel(_model);
+
+  if (_model === "jimeng-video-seedance-2.5") {
+    resolution = resolution.toLowerCase();
+    if (!Number.isInteger(duration) || duration < 4 || duration > 30) {
+      throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "Seedance 2.5 duration must be an integer between 4 and 30 seconds");
+    }
+    if (seed !== undefined && (!Number.isInteger(seed) || seed < 0 || seed > 4294967295)) {
+      throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "Seed must be an unsigned 32-bit integer");
+    }
+    // The standard draft only consumes two images; reject extra references before spending credits.
+    if ((files.length || filePaths.length) > 2 || (files.length > 0 && filePaths.length > 0)) {
+      throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "Seedance 2.5 currently accepts up to two frame images through either files or file_paths");
+    }
+  }
 
   // 解析分辨率参数获取实际的宽高
   const { width, height } = resolveVideoResolution(resolution, ratio);
@@ -1209,6 +1240,7 @@ export async function generateVideo(
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (!file || !file.filepath) {
+        if (_model === "jimeng-video-seedance-2.5") throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "Invalid frame file");
         logger.warn(`第 ${i + 1} 个文件无效，跳过`);
         continue;
       }
@@ -1224,12 +1256,13 @@ export async function generateVideo(
           uploadIDs.push(imageUri);
           logger.info(`第 ${i + 1} 个文件上传成功: ${imageUri}`);
         } else {
+          if (_model === "jimeng-video-seedance-2.5") throw new Error("Frame upload returned no image URI");
           logger.error(`第 ${i + 1} 个文件上传失败: 未获取到 image_uri`);
         }
       } catch (error) {
         logger.error(`第 ${i + 1} 个文件上传失败: ${error.message}`);
 
-        if (i === 0) {
+        if (i === 0 || _model === "jimeng-video-seedance-2.5") {
           logger.error(`首帧文件上传失败，停止视频生成以避免浪费积分`);
           throw new APIException(EX.API_REQUEST_FAILED, `首帧文件上传失败: ${error.message}`);
         } else {
@@ -1285,6 +1318,7 @@ export async function generateVideo(
     for (let i = 0; i < filePaths.length; i++) {
       const filePath = filePaths[i];
       if (!filePath) {
+        if (_model === "jimeng-video-seedance-2.5") throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "Invalid frame URL");
         logger.warn(`第 ${i + 1} 张图片路径为空，跳过`);
         continue;
       }
@@ -1299,13 +1333,14 @@ export async function generateVideo(
           uploadIDs.push(imageUri);
           logger.info(`第 ${i + 1} 张图片上传成功: ${imageUri}`);
         } else {
+          if (_model === "jimeng-video-seedance-2.5") throw new Error("Frame upload returned no image URI");
           logger.error(`第 ${i + 1} 张图片上传失败: 未获取到 image_uri`);
         }
       } catch (error) {
         logger.error(`第 ${i + 1} 张图片上传失败: ${error.message}`);
         
         // 图片上传失败时，停止视频生成避免浪费积分
-        if (i === 0) {
+        if (i === 0 || _model === "jimeng-video-seedance-2.5") {
           logger.error(`首帧图片上传失败，停止视频生成以避免浪费积分`);
           throw new APIException(EX.API_REQUEST_FAILED, `首帧图片上传失败: ${error.message}`);
         } else {
@@ -1376,7 +1411,7 @@ export async function generateVideo(
   // 计算视频宽高比
   const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
   const divisor = gcd(width, height);
-  const aspectRatio = `${width / divisor}:${height / divisor}`;
+  const aspectRatio = _model === "jimeng-video-seedance-2.5" ? ratio : `${width / divisor}:${height / divisor}`;
   
   // 构建请求参数
   const { aigc_data } = await request(
@@ -1391,15 +1426,15 @@ export async function generateVideo(
       },
       data: {
         "extend": {
-          "root_model": end_frame_image ? MODEL_MAP['jimeng-video-3.0'] : model,
+          "root_model": end_frame_image && _model !== "jimeng-video-seedance-2.5" ? MODEL_MAP['jimeng-video-3.0'] : model,
           "m_video_commerce_info": {
-            benefit_type: "basic_video_operation_vgfm_v_three",
+            benefit_type: _model === "jimeng-video-seedance-2.5" ? "" : "basic_video_operation_vgfm_v_three",
             resource_id: "generate_video",
             resource_id_type: "str",
             resource_sub_type: "aigc"
           },
           "m_video_commerce_info_list": [{
-            benefit_type: "basic_video_operation_vgfm_v_three",
+            benefit_type: _model === "jimeng-video-seedance-2.5" ? "" : "basic_video_operation_vgfm_v_three",
             resource_id: "generate_video",
             resource_id_type: "str",
             resource_sub_type: "aigc"
@@ -1439,7 +1474,7 @@ export async function generateVideo(
                   "id": util.uuid(),
                   "model_req_key": model,
                   "priority": 0,
-                  "seed": Math.floor(Math.random() * 100000000) + 2500000000,
+                  "seed": seed ?? Math.floor(Math.random() * 100000000) + 2500000000,
                   "video_aspect_ratio": aspectRatio,
                   "video_gen_inputs": [{
                     duration_ms: duration * 1000,
