@@ -5,6 +5,9 @@ import Response from '@/lib/response/Response.ts';
 import { tokenSplit } from '@/api/controllers/core.ts';
 import { generateVideo, generateSeedanceVideo, generateInternationalSeedanceVideo, isSeedanceModel, isInternationalSeedanceModel, DEFAULT_MODEL, submitAsyncVideoTask, queryAsyncVideoTask, submitInternationalAsyncVideoTask } from '@/api/controllers/videos.ts';
 import util from '@/lib/util.ts';
+import { context as libraryContext } from '@/api/library/service.ts';
+import { LibraryError, invalid } from '@/api/library/store.ts';
+import { resolveReferences } from '@/api/library/references.ts';
 
 export default {
 
@@ -81,6 +84,16 @@ export default {
             // 兼容两种参数名格式：file_paths 和 filePaths
             const finalFilePaths = filePaths.length > 0 ? filePaths : file_paths;
 
+            let unifiedEditInput;
+            try {
+                unifiedEditInput = request.body.references !== undefined || request.body.library_id !== undefined
+                    ? await resolveReferences(libraryContext(request.headers), request.body) : undefined;
+                if (unifiedEditInput && request.files.length) invalid("Library references cannot be combined with uploaded frames");
+            } catch (error) {
+                if (!(error instanceof LibraryError)) throw error;
+                return new Response({ error: { code: error.code, message: error.message } }, { statusCode: error.status });
+            }
+
             // 根据模型类型选择不同的生成函数
             let videoUrl: string;
             if (isSeedanceModel(model)) {
@@ -111,6 +124,7 @@ export default {
                         resolution,
                         duration: finalDuration,
                         seed: seed === undefined ? undefined : Number(seed),
+                        unifiedEditInput,
                         filePaths: finalFilePaths,
                         files: request.files,
                     },

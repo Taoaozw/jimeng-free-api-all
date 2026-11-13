@@ -668,7 +668,7 @@ async function uploadImageForVideo(imageUrl: string, refreshToken: string, regio
 }
 
 // 从Buffer上传视频图片
-async function uploadImageBufferForVideo(buffer: Buffer, refreshToken: string, regionInfo?: import("./core.ts").RegionInfo): Promise<string> {
+export async function uploadImageBufferForVideo(buffer: Buffer, refreshToken: string, regionInfo?: import("./core.ts").RegionInfo): Promise<string> {
   try {
     logger.info(`开始从Buffer上传视频图片，大小: ${buffer.length}字节`);
 
@@ -888,7 +888,7 @@ function parseAudioDuration(buffer: Buffer): number {
  * @param filename 原始文件名（可选）
  * @returns { vid, width?, height?, duration?, fps? }
  */
-async function uploadMediaForVideo(
+export async function uploadMediaForVideo(
   buffer: Buffer,
   mediaType: "video" | "audio",
   refreshToken: string,
@@ -923,7 +923,7 @@ async function uploadMediaForVideo(
   const timestamp = now.toISOString().replace(/[:\-]/g, '').replace(/\.\d{3}Z$/, 'Z');
   const randomStr = Math.random().toString(36).substring(2, 12);
 
-  const vodHost = "https://vod.bytedanceapi.com";
+  const vodHost = ri.isInternational && !ri.isUS ? "https://vod-normal-sg.capcutapi.com" : "https://vod.bytedanceapi.com";
   const applyUrl = `${vodHost}/?Action=ApplyUploadInner&Version=2020-11-19&SpaceName=${spaceName}&FileType=video&IsInner=1&FileSize=${fileSize}&s=${randomStr}`;
 
   const requestHeaders: Record<string, string> = {
@@ -1190,6 +1190,7 @@ export async function generateVideo(
     resolution = "720p",
     duration = 5,
     seed,
+    unifiedEditInput,
     filePaths = [],
     files = [],
   }: {
@@ -1197,6 +1198,7 @@ export async function generateVideo(
     resolution?: string;
     duration?: number;
     seed?: number;
+    unifiedEditInput?: any;
     filePaths?: string[];
     files?: any[];
   },
@@ -1406,7 +1408,7 @@ export async function generateVideo(
   });
   
   // 获取当前模型的 draft 版本
-  const draftVersion = MODEL_DRAFT_VERSIONS[_model] || DEFAULT_DRAFT_VERSION;
+  const draftVersion = unifiedEditInput ? "3.3.39" : MODEL_DRAFT_VERSIONS[_model] || DEFAULT_DRAFT_VERSION;
   
   // 计算视频宽高比
   const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
@@ -1445,7 +1447,8 @@ export async function generateVideo(
         "draft_content": JSON.stringify({
           "type": "draft",
           "id": util.uuid(),
-          "min_version": "3.0.5",
+          "min_version": unifiedEditInput ? "3.3.39" : "3.0.5",
+          ...(unifiedEditInput ? { min_features: ["AIGC_Video_UnifiedEdit", "AIGC_UnifiedEditSubject", "AIGC_UnifiedEditSubject_v2", "AIGC_Video_Seedance25ResultAction"] } : {}),
           "is_from_tsn": true,
           "version": draftVersion,
           "main_component_id": componentId,
@@ -1482,8 +1485,9 @@ export async function generateVideo(
                     end_frame_image: end_frame_image,
                     fps: 24,
                     id: util.uuid(),
-                    min_version: "3.0.5",
-                    prompt: prompt,
+                    min_version: unifiedEditInput ? "3.3.39" : "3.0.5",
+                    prompt: unifiedEditInput ? "" : prompt,
+                    ...(unifiedEditInput ? { unified_edit_input: unifiedEditInput, idip_meta_list: [] } : {}),
                     resolution: resolution,
                     type: "",
                     video_mode: 2
@@ -1608,6 +1612,7 @@ export async function generateVideo(
           : new APIException(EX.API_IMAGE_GENERATION_FAILED, `生成失败，错误码: ${failCode}`);
         // 添加历史ID到错误对象，以便在chat.ts中显示
         error.historyId = historyId;
+        error.setHTTPStatusCode(502);
         throw error;
       }
       
@@ -1618,6 +1623,8 @@ export async function generateVideo(
         await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
     } catch (error) {
+      // A terminal upstream rejection must keep its cause instead of falling through to missing URL.
+      if (status === 30) throw error;
       logger.error(`轮询视频生成结果出错: ${error.message}`);
       retryCount++;
       await new Promise((resolve) => setTimeout(resolve, 2000 * (retryCount + 1)));

@@ -9,7 +9,7 @@ import HTTP_STATUS_CODES from '../http-status-codes.ts';
 export default class FailureBody extends Body {
     
     constructor(error: APIException | Exception | Error, _data?: any) {
-        let errcode, errmsg, data = _data, httpStatusCode = HTTP_STATUS_CODES.OK;;
+        let errcode, errmsg, data = _data, httpStatusCode = HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
         if(_.isString(error))
             error = new Exception(EX.SYSTEM_ERROR, error);
         else if(error instanceof APIException || error instanceof Exception)
@@ -20,7 +20,8 @@ export default class FailureBody extends Body {
             code: errcode || -1,
             message: errmsg || 'Internal error',
             data,
-            statusCode: httpStatusCode
+            // An exception must never inherit Body's successful HTTP default.
+            statusCode: httpStatusCode >= 400 && httpStatusCode <= 599 ? httpStatusCode : HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
         });
     }
 
