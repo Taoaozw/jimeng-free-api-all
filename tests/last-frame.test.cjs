@@ -25,3 +25,20 @@ test('corrupt input and non-JPEG output are rejected',async()=>{
  assert.throws(()=>output.jpegDimensions(Buffer.from('invalid')));
  await assert.rejects(output.download('http://127.0.0.1/private',path.join(root,'private'),1024),/blocked/);
 });
+const mute={};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname,'../src/api/tasks/mute-video.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,{exports:mute,Buffer,require:n=>n.includes('library/store')?{libraryStore:()=>({directory:root})}:n==='./last-frame.ts'?output:n==='./frame-store.ts'?{}:require(n)});
+test('audio removal copies all video frames unchanged, removes multiple tracks, and accepts silent input',async()=>{
+ const source=path.join(root,'sound.mp4'),silent=path.join(root,'silent.mp4'),again=path.join(root,'silent-again.mp4');
+ ffmpeg(['-f','lavfi','-i','testsrc2=s=160x96:r=8:d=1','-f','lavfi','-i','sine=duration=2','-map','0:v','-map','1:a','-map','1:a','-c:v','libx264','-c:a','aac',source]);
+ await mute.removeAudio(source,silent);await mute.removeAudio(silent,again);
+ const streams=JSON.parse(execFileSync('ffprobe',['-v','error','-show_streams','-of','json',silent])).streams;
+ assert.equal(streams.length,1);assert.equal(streams[0].codec_type,'video');assert.equal(streams[0].width,160);assert.equal(streams[0].height,96);
+ const hash=f=>ffmpeg(['-i',f,'-map','0:v:0','-c','copy','-f','hash','-hash','sha256','pipe:1']).toString();
+ assert.equal(hash(source),hash(silent));assert.equal(hash(source),hash(again));
+ const frame=await output.extractLastFrame(silent,path.join(root,'silent-last.jpg'));assert.equal(frame.width,160);
+ await assert.rejects(mute.removeAudio(path.join(root,'invalid.mp4'),path.join(root,'bad-silent.mp4')));
+});
+test('4K silent video keeps the original dimensions and codec',async()=>{
+ const silent=path.join(root,'4k-silent.mp4');await mute.removeAudio(path.join(root,'4k.mp4'),silent);
+ const stream=JSON.parse(execFileSync('ffprobe',['-v','error','-show_streams','-of','json',silent])).streams[0];assert.equal(stream.width,3840);assert.equal(stream.height,2160);assert.equal(stream.codec_name,'h264');
+});

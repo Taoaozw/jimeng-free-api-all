@@ -7,8 +7,9 @@ const ts=require('typescript');
 const vm=require('node:vm');
 const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'dreamina-tasks-'));
 Object.assign(process.env,{JIMENG_LIBRARY_DIR:temporary,JIMENG_LIBRARY_ACCOUNT:'account-a',JIMENG_API_KEY:'private-key',JIMENG_ACCOUNT_TOKEN:'secret-token',JIMENG_MEDIA_BASE_URL:'https://media.example/account-a'});
-let submitError,history={status:20},submissions=0,lastOptions,queue=2,cancelError,outputError,frameError,frameResolve,frameCalls=0,deliveries=[];
+let submitError,history={status:20},submissions=0,lastOptions,queue=2,cancelError,outputError,frameError,frameResolve,frameCalls=0,muteCalls=0,muteError,muteResolve,deliveries=[];
 const mocks={
+ '@/api/tasks/mute-video.ts':{muteVideo:async()=>{muteCalls++;if(muteError)throw muteError;return await new Promise(resolve=>{muteResolve=resolve})}},
  '@/api/tasks/last-frame.ts':{lastFrame:async()=>{frameCalls++;if(frameError)throw frameError;return await new Promise(resolve=>{frameResolve=resolve})}},
  '@/api/tasks/output.ts':{videoOutput:async item=>{if(outputError)throw outputError;return item?.video?.play_url??'https://example.com/result.mp4'}},
  '@/api/tasks/callback.ts':{destination:async value=>{if(!value.startsWith('https://')) load('@/api/library/store.ts').invalid('Invalid callback')},deliver:async(url,body)=>deliveries.push(body)},
@@ -17,6 +18,7 @@ const mocks={
 };
 function loader(){const cache=new Map();return function load(filename){
  if(mocks[filename])return mocks[filename];
+ if(filename.endsWith('/tasks/mute-video.ts'))return mocks['@/api/tasks/mute-video.ts'];
  if(filename.endsWith('/tasks/last-frame.ts'))return mocks['@/api/tasks/last-frame.ts'];
  if(filename.endsWith('/tasks/output.ts'))return mocks['@/api/tasks/output.ts'];
  if(filename.endsWith('/tasks/callback.ts'))return mocks['@/api/tasks/callback.ts'];
@@ -195,4 +197,38 @@ test('persisted postprocessing resumes after restart and remains bound to the or
  assert.equal((await restarted.get(headers,created.id)).status,'running');
  frameResolve({id:'b'.repeat(64),url:'https://media.example/resumed.jpg',expiresAt:Date.now()+86400000});await tick();
  assert.equal((await restarted.get(headers,created.id)).content.last_frame_url,'https://media.example/resumed.jpg');
+});
+test('audio false waits for processing, survives restart, and combines with last frame and callbacks',async()=>{
+ history={status:50,item_list:[{video:{play_url:'https://example.com/marked.mp4'}}]};deliveries=[];
+ const owned={...headers,'x-flowxy-library-owner':'org-muted','x-flowxy-task-scope':'channel:key','x-flowxy-task-public-id':'fxt-muted'};
+ const created=await service.create(owned,{...body,generate_audio:false,watermark:true,return_last_frame:true,callback_url:'https://callback.example/muted'});
+ assert.equal((await service.get(headers,created.id)).status,'running');const calls=muteCalls;
+ await service.get(headers,created.id);assert.equal(muteCalls,calls);
+ muteResolve({id:'c'.repeat(64),url:'https://media.example/silent.mp4'});await tick();
+ assert.equal((await service.get(headers,created.id)).content,undefined);
+ frameResolve({id:'d'.repeat(64),url:'https://media.example/last.jpg'});await tick();
+ const restored=loader()('@/api/tasks/service.ts'),done=await restored.get(headers,created.id);
+ assert.equal(done.status,'succeeded');assert.equal(done.generate_audio,false);assert.equal(done.watermark,true);assert.equal(done.content.video_url,'https://media.example/silent.mp4');assert.equal(done.content.last_frame_url,'https://media.example/last.jpg');
+ assert.equal((await service.list(owned,{})).items[0].content.video_url,done.content.video_url);
+ await service.flushCallbacks();await service.flushCallbacks();await service.flushCallbacks();assert.equal(deliveries.at(-1).generate_audio,false);
+ await service.remove(headers,created.id);
+});
+test('mute failure is terminal and true or omitted audio never starts a worker',async()=>{
+ muteError=Error('remux failed');const created=await service.create(headers,{...body,generate_audio:false});await service.get(headers,created.id);await tick();muteError=undefined;
+ const failed=await service.get(headers,created.id);assert.equal(failed.status,'failed');assert.equal(failed.error.code,'task.audio_postprocess_failed');assert.equal(failed.content,undefined);
+ for(const flag of [true,undefined]){const before=muteCalls;const task=await service.create(headers,{...body,generate_audio:flag});assert.equal((await service.get(headers,task.id)).status,'succeeded');assert.equal(muteCalls,before)}
+ for(const flag of ['false',0,null])assert.throws(()=>parse({...body,generate_audio:flag}),e=>e.status===400);
+});
+test('pending mute resumes after restart only for the original account',async()=>{
+ const created=await service.create(headers,{...body,generate_audio:false});
+ const directory=path.join(load('@/api/library/store.ts').libraryStore().directory,'tasks'),file=path.join(directory,created.id+'.json'),record=JSON.parse(fs.readFileSync(file));
+ Object.assign(record,{status:'running',postprocess:{sourceUrl:'https://example.com/raw.mp4',videoUrl:'https://example.com/marked.mp4'}});fs.writeFileSync(file,JSON.stringify(record));
+ const restarted=loader()('@/api/tasks/service.ts');await assert.rejects(restarted.get({authorization:'Bearer wrong-account'},created.id),e=>e.status===404);
+ assert.equal((await restarted.get(headers,created.id)).status,'running');muteResolve({id:'e'.repeat(64),url:'https://media.example/resumed.mp4'});await tick();
+ const done=await restarted.get(headers,created.id);assert.equal(done.generate_audio,false);assert.equal(done.content.video_url,'https://media.example/resumed.mp4');assert.equal(done.content.last_frame_url,undefined);
+});
+test('a later frame failure removes the already muted video and exposes no partial result',async()=>{
+ const store=load('@/api/tasks/frame-store.ts'),source=path.join(temporary,'partial.mp4');fs.writeFileSync(source,'video');const video=await store.saveVideo(source);
+ frameError=Error('frame decoder failed');const task=await service.create(headers,{...body,generate_audio:false,return_last_frame:true});await service.get(headers,task.id);muteResolve(video);await tick();frameError=undefined;
+ const failed=await service.get(headers,task.id);assert.equal(failed.status,'failed');assert.equal(failed.error.code,'task.last_frame_failed');assert.equal(failed.content,undefined);await assert.rejects(store.readVideo(video.id),e=>e.status===404);
 });

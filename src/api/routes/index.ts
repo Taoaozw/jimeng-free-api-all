@@ -11,6 +11,7 @@ import video from './video.ts';
 import library from './library.ts';
 import tasks from './tasks.ts';
 import frames from './frames.ts';
+import silentVideos from './silent-videos.ts';
 
 export default [
     {
@@ -35,5 +36,6 @@ export default [
     library,
     tasks,
     frames,
+    silentVideos,
     video
 ];

@@ -7,14 +7,15 @@ import { libraryStore, LibraryError, invalid } from '@/api/library/store.ts';
 import { parseInput, generationOptions } from './input.ts';
 import { destination, deliver } from './callback.ts';
 import { videoOutput } from './output.ts';
+import { muteVideo } from './mute-video.ts';
 import { lastFrame } from './last-frame.ts';
-import { cleanFrames, frameBaseUrl, removeFrame } from './frame-store.ts';
+import { cleanFrames, frameBaseUrl, removeFrame, removeVideo } from './frame-store.ts';
 
 type Task = {
   id: string; historyId: string; credential: string; model: string;
   deleted?: boolean; owner?: string; scope?: string; publicId?: string; publicModel?: string; itemId?: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; created_at: number; updated_at: number;
-  returnLastFrame?: boolean; frameId?: string;
+  generateAudio?: boolean; videoId?: string; returnLastFrame?: boolean; frameId?: string;
   postprocess?: { videoUrl: string; sourceUrl: string };
   watermark?: boolean; taskType?: string; resolution: string; ratio: string; duration: number; seed?: number; framespersecond: number; draft: boolean;
   content?: { video_url: string; last_frame_url?: string }; error?: { code: string; message: string };
@@ -61,6 +62,7 @@ function view(task: Task, publicId = false) {
     status: task.status, created_at: task.created_at, updated_at: task.updated_at,
     resolution: task.resolution, ratio: task.ratio, duration: task.duration, seed: task.seed,
     omni_reference_task_type: task.taskType ?? 'auto', framespersecond: task.framespersecond, draft: task.draft ?? false, service_tier: 'default',
+    ...(task.generateAudio !== undefined ? { generate_audio: task.generateAudio } : {}),
     ...(task.watermark !== undefined ? { watermark: task.watermark } : {}),
     ...(task.content ? { content: task.content } : {}), ...(task.error ? { error: task.error } : {}),
   };
@@ -71,7 +73,7 @@ function notify(task: Task) {
 
 export async function create(headers: Record<string, string>, body: any) {
   const input = parseInput(body);
-  if (input.returnLastFrame) frameBaseUrl();
+  if (input.returnLastFrame || input.generateAudio === false) frameBaseUrl();
   const { token, directory } = environment(headers);
   if (body.callback_url !== undefined) await destination(body.callback_url);
   const id = headers['x-flowxy-task-upstream-id'] ?? `dmt_${randomUUID()}`;
@@ -103,7 +105,7 @@ export async function create(headers: Record<string, string>, body: any) {
       owner: headers['x-flowxy-library-owner'], scope: headers['x-flowxy-task-scope'],
       publicId: headers['x-flowxy-task-public-id'], publicModel: headers['x-flowxy-task-model'],
       status: 'queued', created_at: timestamp, updated_at: timestamp,
-      returnLastFrame: input.returnLastFrame, watermark: input.watermark, taskType: input.taskType, resolution: input.resolution, ratio: input.ratio, duration: input.duration, seed: input.seed, framespersecond: 24, draft: input.draft,
+      generateAudio: input.generateAudio, returnLastFrame: input.returnLastFrame, watermark: input.watermark, taskType: input.taskType, resolution: input.resolution, ratio: input.ratio, duration: input.duration, seed: input.seed, framespersecond: 24, draft: input.draft,
       ...(body.callback_url ? { callback: { url: body.callback_url, pending: [] } } : {}),
     };
     notify(task);
@@ -165,9 +167,9 @@ async function refresh(task: Task, token: string) {
       task.ratio = standard ?? `${width / divisor}:${height / divisor}`;
     }
     task.itemId = itemId ? String(itemId) : undefined;
-    if (task.returnLastFrame) {
+    if (task.returnLastFrame || task.generateAudio === false) {
       let sourceUrl: string;
-      try { sourceUrl = task.watermark === false ? url : await videoOutput(item, false, token); }
+      try { sourceUrl = !task.returnLastFrame || task.watermark === false ? url : await videoOutput(item, false, token); }
       catch (error) {
         if (error.code !== 'task.output_unavailable') throw error;
         task.status = 'failed'; task.error = { code: 'task.last_frame_failed', message: 'Unwatermarked source video is unavailable for last-frame extraction' };
@@ -184,29 +186,39 @@ async function refresh(task: Task, token: string) {
 }
 
 const processing = new Set<string>();
-function startFrameTask(directory: string, token: string, task: Task) {
+function startPostprocess(directory: string, token: string, task: Task) {
   if (!task.postprocess || !active(task) || processing.has(task.id) || processing.size >= 1) return;
   const { sourceUrl, videoUrl } = task.postprocess;
   processing.add(task.id);
   // Persisted pending work is resumed by the existing task poller after a proxy restart.
   void (async () => {
     let frame: Awaited<ReturnType<typeof lastFrame>> | undefined;
+    let video: Awaited<ReturnType<typeof muteVideo>> | undefined;
+    let phase = 'audio';
+    const cleanup = async () => {
+      if (video) await removeVideo(video.id);
+      if (frame) await removeFrame(frame.id);
+    };
     try {
-      frame = await lastFrame(sourceUrl);
+      if (task.generateAudio === false) video = await muteVideo(videoUrl);
+      phase = 'frame';
+      if (task.returnLastFrame) frame = await lastFrame(sourceUrl);
       await locked(task.id, async () => {
         const current = await read(directory, token, task.id, undefined, true);
-        if (!current.postprocess || !active(current)) { await removeFrame(frame.id); return; }
-        current.content = { video_url: videoUrl, last_frame_url: frame.url };
-        current.frameId = frame.id; current.status = 'succeeded'; delete current.postprocess;
+        if (!current.postprocess || !active(current)) { await cleanup(); return; }
+        current.content = { video_url: video?.url ?? videoUrl, ...(frame ? { last_frame_url: frame.url } : {}) };
+        current.frameId = frame?.id; current.videoId = video?.id; current.status = 'succeeded'; delete current.postprocess;
         current.updated_at = now(); notify(current); await save(directory, current);
       });
     } catch {
-      if (frame) await removeFrame(frame.id).catch(() => {});
+      await cleanup().catch(() => {});
       await locked(task.id, async () => {
         const current = await read(directory, token, task.id, undefined, true);
         if (!current.postprocess || !active(current)) return;
         current.status = 'failed'; delete current.postprocess;
-        current.error = { code: 'task.last_frame_failed', message: 'Failed to extract or store the generated video last frame' };
+        current.error = phase === 'audio'
+          ? { code: 'task.audio_postprocess_failed', message: 'Failed to remove or store the generated video audio track' }
+          : { code: 'task.last_frame_failed', message: 'Failed to extract or store the generated video last frame' };
         current.updated_at = now(); notify(current); await save(directory, current);
       });
     } finally { processing.delete(task.id); }
@@ -219,7 +231,7 @@ export async function get(headers: Record<string, string>, id: string) {
     const task = await read(directory, token, id, undefined, headers['x-flowxy-task-reconcile'] === 'true');
     await refresh(task, token);
     await save(directory, task);
-    startFrameTask(directory, token, task);
+    startPostprocess(directory, token, task);
     return view(task);
   });
 }
@@ -231,6 +243,7 @@ export async function remove(headers: Record<string, string>, id: string) {
     if (!active(task)) {
       // Keep the terminal state for the existing settlement worker after public deletion.
       if (task.frameId) await removeFrame(task.frameId);
+      if (task.videoId) await removeVideo(task.videoId);
       task.deleted = true; await save(directory, task);
       return {};
     }
