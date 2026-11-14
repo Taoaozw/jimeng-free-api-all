@@ -7,13 +7,17 @@ import { libraryStore, LibraryError, invalid } from '@/api/library/store.ts';
 import { parseInput, generationOptions } from './input.ts';
 import { destination, deliver } from './callback.ts';
 import { videoOutput } from './output.ts';
+import { lastFrame } from './last-frame.ts';
+import { cleanFrames, frameBaseUrl, removeFrame } from './frame-store.ts';
 
 type Task = {
   id: string; historyId: string; credential: string; model: string;
   deleted?: boolean; owner?: string; scope?: string; publicId?: string; publicModel?: string; itemId?: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; created_at: number; updated_at: number;
+  returnLastFrame?: boolean; frameId?: string;
+  postprocess?: { videoUrl: string; sourceUrl: string };
   watermark?: boolean; taskType?: string; resolution: string; ratio: string; duration: number; seed?: number; framespersecond: number; draft: boolean;
-  content?: { video_url: string }; error?: { code: string; message: string };
+  content?: { video_url: string; last_frame_url?: string }; error?: { code: string; message: string };
   callback?: { url: string; pending: { body: any; attempts: number; next: number }[] };
 };
 const missing = () => { throw new LibraryError(404, 'task.not_found', 'Task not found'); };
@@ -67,6 +71,7 @@ function notify(task: Task) {
 
 export async function create(headers: Record<string, string>, body: any) {
   const input = parseInput(body);
+  if (input.returnLastFrame) frameBaseUrl();
   const { token, directory } = environment(headers);
   if (body.callback_url !== undefined) await destination(body.callback_url);
   const id = headers['x-flowxy-task-upstream-id'] ?? `dmt_${randomUUID()}`;
@@ -98,7 +103,7 @@ export async function create(headers: Record<string, string>, body: any) {
       owner: headers['x-flowxy-library-owner'], scope: headers['x-flowxy-task-scope'],
       publicId: headers['x-flowxy-task-public-id'], publicModel: headers['x-flowxy-task-model'],
       status: 'queued', created_at: timestamp, updated_at: timestamp,
-      watermark: input.watermark, taskType: input.taskType, resolution: input.resolution, ratio: input.ratio, duration: input.duration, seed: input.seed, framespersecond: 24, draft: input.draft,
+      returnLastFrame: input.returnLastFrame, watermark: input.watermark, taskType: input.taskType, resolution: input.resolution, ratio: input.ratio, duration: input.duration, seed: input.seed, framespersecond: 24, draft: input.draft,
       ...(body.callback_url ? { callback: { url: body.callback_url, pending: [] } } : {}),
     };
     notify(task);
@@ -108,7 +113,7 @@ export async function create(headers: Record<string, string>, body: any) {
 }
 
 async function refresh(task: Task, token: string) {
-  if (!active(task)) return;
+  if (!active(task) || task.postprocess) return;
   const result = await request('post', '/mweb/v1/get_history_by_ids', token, { data: { history_ids: [task.historyId] } });
   const history = result[task.historyId] ?? result.history_list?.find((h: any) => String(h.history_record_id ?? h.id) === task.historyId);
   if (!history) throw new LibraryError(502, 'task.upstream_unavailable', 'Upstream task history is temporarily unavailable');
@@ -159,10 +164,53 @@ async function refresh(task: Task, token: string) {
       // Encoders round dimensions (for example 854x480), but downstream generation expects nominal ratios.
       task.ratio = standard ?? `${width / divisor}:${height / divisor}`;
     }
-    task.status = 'succeeded'; task.itemId = itemId ? String(itemId) : undefined;
-    task.content = { video_url: url };
+    task.itemId = itemId ? String(itemId) : undefined;
+    if (task.returnLastFrame) {
+      let sourceUrl: string;
+      try { sourceUrl = task.watermark === false ? url : await videoOutput(item, false, token); }
+      catch (error) {
+        if (error.code !== 'task.output_unavailable') throw error;
+        task.status = 'failed'; task.error = { code: 'task.last_frame_failed', message: 'Unwatermarked source video is unavailable for last-frame extraction' };
+        task.updated_at = now(); notify(task); return;
+      }
+      task.postprocess = { videoUrl: url, sourceUrl };
+      task.status = 'running';
+    } else {
+      task.status = 'succeeded';
+      task.content = { video_url: url };
+    }
   }
   if (before !== task.status) { task.updated_at = now(); notify(task); }
+}
+
+const processing = new Set<string>();
+function startFrameTask(directory: string, token: string, task: Task) {
+  if (!task.postprocess || !active(task) || processing.has(task.id) || processing.size >= 1) return;
+  const { sourceUrl, videoUrl } = task.postprocess;
+  processing.add(task.id);
+  // Persisted pending work is resumed by the existing task poller after a proxy restart.
+  void (async () => {
+    let frame: Awaited<ReturnType<typeof lastFrame>> | undefined;
+    try {
+      frame = await lastFrame(sourceUrl);
+      await locked(task.id, async () => {
+        const current = await read(directory, token, task.id, undefined, true);
+        if (!current.postprocess || !active(current)) { await removeFrame(frame.id); return; }
+        current.content = { video_url: videoUrl, last_frame_url: frame.url };
+        current.frameId = frame.id; current.status = 'succeeded'; delete current.postprocess;
+        current.updated_at = now(); notify(current); await save(directory, current);
+      });
+    } catch {
+      if (frame) await removeFrame(frame.id).catch(() => {});
+      await locked(task.id, async () => {
+        const current = await read(directory, token, task.id, undefined, true);
+        if (!current.postprocess || !active(current)) return;
+        current.status = 'failed'; delete current.postprocess;
+        current.error = { code: 'task.last_frame_failed', message: 'Failed to extract or store the generated video last frame' };
+        current.updated_at = now(); notify(current); await save(directory, current);
+      });
+    } finally { processing.delete(task.id); }
+  })().catch(() => { /* A storage failure leaves persisted work for the next poll. */ });
 }
 
 export async function get(headers: Record<string, string>, id: string) {
@@ -171,6 +219,7 @@ export async function get(headers: Record<string, string>, id: string) {
     const task = await read(directory, token, id, undefined, headers['x-flowxy-task-reconcile'] === 'true');
     await refresh(task, token);
     await save(directory, task);
+    startFrameTask(directory, token, task);
     return view(task);
   });
 }
@@ -181,6 +230,7 @@ export async function remove(headers: Record<string, string>, id: string) {
     const task = await read(directory, token, id);
     if (!active(task)) {
       // Keep the terminal state for the existing settlement worker after public deletion.
+      if (task.frameId) await removeFrame(task.frameId);
       task.deleted = true; await save(directory, task);
       return {};
     }
@@ -241,11 +291,14 @@ export async function flushCallbacks() {
 }
 
 export function startCallbacks() {
-  let busy = false;
+  let busy = false, lastCleanup = 0;
   const timer = setInterval(async () => {
     if (busy) return;
     busy = true;
-    try { await flushCallbacks(); } catch { /* Private account storage may not be enabled on this deployment. */ }
+    try {
+      await flushCallbacks();
+      if (Date.now() - lastCleanup >= 60_000) { lastCleanup = Date.now(); await cleanFrames(); }
+    } catch { /* Private account storage may not be enabled on this deployment. */ }
     finally { busy = false; }
   }, 1000);
   timer.unref();

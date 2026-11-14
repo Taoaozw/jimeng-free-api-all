@@ -10,6 +10,7 @@ import videos from './videos.ts';
 import video from './video.ts';
 import library from './library.ts';
 import tasks from './tasks.ts';
+import frames from './frames.ts';
 
 export default [
     {
@@ -33,5 +34,6 @@ export default [
     videos,
     library,
     tasks,
+    frames,
     video
 ];

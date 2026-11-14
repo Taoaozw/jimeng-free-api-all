@@ -10,6 +10,7 @@ FROM node:lts
 
 # 安装 Chromium 依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
     libnss3 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \

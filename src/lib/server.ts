@@ -12,6 +12,7 @@ import FailureBody from './response/FailureBody.ts';
 import EX from './consts/exceptions.ts';
 import logger from './logger.ts';
 import config from './config.ts';
+import { isFrameRequest } from '@/api/tasks/frame-store.ts';
 
 class Server {
 
@@ -27,7 +28,7 @@ class Server {
             throw new Error('JIMENG_ACCOUNT_TOKEN and JIMENG_API_KEY must be configured together');
         }
         this.app.use(async (ctx: any, next: Function) => {
-            if (accountToken) {
+            if (accountToken && !isFrameRequest(ctx.method, ctx.path)) {
                 if (ctx.get('authorization') !== `Bearer ${apiKey}`) {
                     ctx.status = 401;
                     ctx.body = { error: 'Invalid API key' };

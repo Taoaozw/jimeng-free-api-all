@@ -6,9 +6,10 @@ const path=require('node:path');
 const ts=require('typescript');
 const vm=require('node:vm');
 const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'dreamina-tasks-'));
-Object.assign(process.env,{JIMENG_LIBRARY_DIR:temporary,JIMENG_LIBRARY_ACCOUNT:'account-a',JIMENG_API_KEY:'private-key',JIMENG_ACCOUNT_TOKEN:'secret-token'});
-let submitError,history={status:20},submissions=0,lastOptions,queue=2,cancelError,outputError,deliveries=[];
+Object.assign(process.env,{JIMENG_LIBRARY_DIR:temporary,JIMENG_LIBRARY_ACCOUNT:'account-a',JIMENG_API_KEY:'private-key',JIMENG_ACCOUNT_TOKEN:'secret-token',JIMENG_MEDIA_BASE_URL:'https://media.example/account-a'});
+let submitError,history={status:20},submissions=0,lastOptions,queue=2,cancelError,outputError,frameError,frameResolve,frameCalls=0,deliveries=[];
 const mocks={
+ '@/api/tasks/last-frame.ts':{lastFrame:async()=>{frameCalls++;if(frameError)throw frameError;return await new Promise(resolve=>{frameResolve=resolve})}},
  '@/api/tasks/output.ts':{videoOutput:async item=>{if(outputError)throw outputError;return item?.video?.play_url??'https://example.com/result.mp4'}},
  '@/api/tasks/callback.ts':{destination:async value=>{if(!value.startsWith('https://')) load('@/api/library/store.ts').invalid('Invalid callback')},deliver:async(url,body)=>deliveries.push(body)},
  '@/api/controllers/core.ts':{tokenSplit:s=>s.replace(/^Bearer /,'').split(','),request:async(method,url)=>{if(url.includes('cancel_generate')) {if(cancelError) throw cancelError; return {}};return url.includes('queue_info')?{'native-id':{queue_info:{queue_status:queue}}}:{'native-id':history}}},
@@ -16,13 +17,14 @@ const mocks={
 };
 function loader(){const cache=new Map();return function load(filename){
  if(mocks[filename])return mocks[filename];
+ if(filename.endsWith('/tasks/last-frame.ts'))return mocks['@/api/tasks/last-frame.ts'];
  if(filename.endsWith('/tasks/output.ts'))return mocks['@/api/tasks/output.ts'];
  if(filename.endsWith('/tasks/callback.ts'))return mocks['@/api/tasks/callback.ts'];
  const absolute=filename.startsWith('@/')?path.resolve(__dirname,'../src',filename.slice(2)):filename;
  if(cache.has(absolute))return cache.get(absolute);
  const exports={};cache.set(absolute,exports);
  const js=ts.transpileModule(fs.readFileSync(absolute,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
- vm.runInNewContext(js,{exports,process,Buffer,console,require:n=>n.startsWith('.')?load(path.resolve(path.dirname(absolute),n)):n.startsWith('@/')?load(n):require(n)});return exports;
+ vm.runInNewContext(js,{exports,process,Buffer,URL,console,require:n=>n.startsWith('.')?load(path.resolve(path.dirname(absolute),n)):n.startsWith('@/')?load(n):require(n)});return exports;
 }}
 const load=loader(),service=load('@/api/tasks/service.ts'),parse=load('@/api/tasks/input.ts').parseInput;
 const headers={authorization:'Bearer secret-token'},body={model:'jimeng-video-seedance-2.5',content:[{type:'text',text:'A paper boat floats'}],duration:4,resolution:'480p',seed:12};
@@ -156,4 +158,41 @@ test('incomplete history remains retryable before selecting an output variant',a
  await assert.rejects(service.get(headers,created.id),e=>e.code==='task.upstream_unavailable');
  history={status:50,item_list:[{video:{play_url:'https://example.com/result.mp4'}}]};
  assert.equal((await service.get(headers,created.id)).status,'succeeded');
+});
+
+
+const tick=()=>new Promise(resolve=>setTimeout(resolve,20));
+test('last frame stays running, deduplicates polling, and persists URL in query list and callback',async()=>{
+ history={status:50,item_list:[{item_id:'frame-item',video:{play_url:'https://example.com/video.mp4'}}]};deliveries=[];frameCalls=0;
+ const owner={...headers,'x-flowxy-library-owner':'org-frame','x-flowxy-task-scope':'channel:key','x-flowxy-task-public-id':'fxt-frame'};
+ const created=await service.create(owner,{...body,return_last_frame:true,callback_url:'https://callback.example/frame'});
+ const pending=await service.get(headers,created.id);assert.equal(pending.status,'running');assert.equal(pending.content,undefined);
+ await service.get(headers,created.id);assert.equal(frameCalls,1);
+ frameResolve({id:'a'.repeat(64),url:'https://media.example/last.jpg',expiresAt:Date.now()+86400000});await tick();
+ const done=await loader()('@/api/tasks/service.ts').get(headers,created.id);
+ assert.equal(done.status,'succeeded');assert.equal(done.content.last_frame_url,'https://media.example/last.jpg');assert.equal(done.postprocess,undefined);
+ assert.equal((await service.list(owner,{})).items[0].content.last_frame_url,done.content.last_frame_url);
+ await service.flushCallbacks();await service.flushCallbacks();await service.flushCallbacks();
+ assert.equal(deliveries.at(-1).content.last_frame_url,done.content.last_frame_url);
+ await service.remove(headers,created.id);
+});
+test('last frame failure persists as failure and false never schedules postprocessing',async()=>{
+ frameError=Error('decoder failed');const created=await service.create(headers,{...body,return_last_frame:true});
+ await service.get(headers,created.id);await tick();frameError=undefined;
+ const failed=await loader()('@/api/tasks/service.ts').get(headers,created.id);
+ assert.equal(failed.status,'failed');assert.equal(failed.error.code,'task.last_frame_failed');assert.equal(failed.content,undefined);
+ const calls=frameCalls, plain=await service.create(headers,{...body,return_last_frame:false});
+ assert.equal((await service.get(headers,plain.id)).status,'succeeded');assert.equal(frameCalls,calls);
+ for(const value of ['true',1,null])assert.throws(()=>parse({...body,return_last_frame:value}),e=>e.status===400);
+});
+test('persisted postprocessing resumes after restart and remains bound to the original account',async()=>{
+ const created=await service.create(headers,{...body,return_last_frame:true});
+ const directory=path.join(load('@/api/library/store.ts').libraryStore().directory,'tasks');
+ const file=path.join(directory,created.id+'.json'),record=JSON.parse(fs.readFileSync(file));
+ Object.assign(record,{status:'running',postprocess:{sourceUrl:'https://example.com/native.mp4',videoUrl:'https://example.com/marked.mp4'}});fs.writeFileSync(file,JSON.stringify(record));
+ const restarted=loader()('@/api/tasks/service.ts');
+ await assert.rejects(restarted.get({authorization:'Bearer wrong-account'},created.id),e=>e.status===404);
+ assert.equal((await restarted.get(headers,created.id)).status,'running');
+ frameResolve({id:'b'.repeat(64),url:'https://media.example/resumed.jpg',expiresAt:Date.now()+86400000});await tick();
+ assert.equal((await restarted.get(headers,created.id)).content.last_frame_url,'https://media.example/resumed.jpg');
 });
