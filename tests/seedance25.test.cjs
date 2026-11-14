@@ -200,7 +200,7 @@ test('terminal generation rejection preserves the upstream failure code', async(
 test('draft finalization retains native parent inputs and the draft billing benefit', async () => {
   const { exports, calls, stopped } = controller();
   const parent={id:'source',process_type:1,abilities:{gen_video:{text_to_video_params:{model_req_key:'dreamina_seedance_45_pro_draft',video_gen_inputs:[{is_draft_mode:true,duration_ms:4000,unified_edit_input:{material_list:[{material_type:'video'}]}}]}}}};
-  await assert.rejects(exports.submitVideo(model,'',{duration:4,resolution:'1080p',draftSource:{historyId:'history',itemId:'item',draftContent:JSON.stringify({main_component_id:'source',component_list:[parent]})}},'token'), e=>e===stopped);
+  await assert.rejects(exports.submitVideo(model,'',{duration:4,ratio:'427:240',resolution:'1080p',draftSource:{historyId:'history',itemId:'item',draftContent:JSON.stringify({main_component_id:'source',component_list:[parent]})}},'token'), e=>e===stopped);
   const payload=calls[0][3].data,draft=JSON.parse(payload.draft_content),final=draft.component_list[1];
   assert.equal(payload.extend.root_model,'dreamina_seedance_45_pro_draft');
   assert.equal(payload.extend.m_video_commerce_info.benefit_type,'seedance_25_draft_1080p_output');

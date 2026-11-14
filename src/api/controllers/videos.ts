@@ -1236,7 +1236,7 @@ export async function submitVideo(
 
   // 解析分辨率参数获取实际的宽高
   const sourceVideo = unifiedEditInput?.material_list?.find((item: any) => item.material_type === "video")?.video_info;
-  const { width, height } = ratio === "adaptive" && sourceVideo
+  const { width, height } = draftSource ? { width: 0, height: 0 } : ratio === "adaptive" && sourceVideo
     ? { width: Number(sourceVideo.width) || 0, height: Number(sourceVideo.height) || 0 }
     : resolveVideoResolution(resolution, ratio);
 

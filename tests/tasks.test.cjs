@@ -126,7 +126,7 @@ test('adaptive task duration cannot become a negative or fabricated settlement',
  history={status:50,item_list:[{video:{play_url:'https://example.com/edited.mp4'}}]};
  await assert.rejects(service.get(headers,created.id),e=>e.status===502);
  history.item_list[0].video.duration_ms=4200;
- history.item_list[0].video.transcoded_video={origin:{width:1280,height:720}};
+ history.item_list[0].video.transcoded_video={origin:{width:854,height:480}};
  const done=await service.get(headers,created.id);
  assert.equal(done.duration,5);assert.equal(done.ratio,'16:9');assert.equal(done.status,'succeeded');
 });

@@ -139,7 +139,13 @@ async function refresh(task: Task, token: string) {
     if (width > 0 && height > 0) {
       const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
       const divisor = gcd(width, height);
-      task.ratio = `${width / divisor}:${height / divisor}`;
+      const ratio = width / height;
+      const standard = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'].find(value => {
+        const [w, h] = value.split(':').map(Number);
+        return Math.abs(ratio / (w / h) - 1) < 0.01;
+      });
+      // Encoders round dimensions (for example 854x480), but downstream generation expects nominal ratios.
+      task.ratio = standard ?? `${width / divisor}:${height / divisor}`;
     }
     task.status = 'succeeded'; task.itemId = itemId ? String(itemId) : undefined;
     task.content = { video_url: url };
