@@ -1222,7 +1222,7 @@ export async function submitVideo(
 
   if (_model === "jimeng-video-seedance-2.5") {
     resolution = resolution.toLowerCase();
-    if (!Number.isInteger(duration) || duration < 4 || duration > 30) {
+    if (!(duration === -1 && unifiedEditInput?.edit_input?.enable) && (!Number.isInteger(duration) || duration < 4 || duration > 30)) {
       throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "Seedance 2.5 duration must be an integer between 4 and 30 seconds");
     }
     if (seed !== undefined && (!Number.isInteger(seed) || seed < 0 || seed > 4294967295)) {
@@ -1235,7 +1235,10 @@ export async function submitVideo(
   }
 
   // 解析分辨率参数获取实际的宽高
-  const { width, height } = resolveVideoResolution(resolution, ratio);
+  const sourceVideo = unifiedEditInput?.material_list?.find((item: any) => item.material_type === "video")?.video_info;
+  const { width, height } = ratio === "adaptive" && sourceVideo
+    ? { width: Number(sourceVideo.width) || 0, height: Number(sourceVideo.height) || 0 }
+    : resolveVideoResolution(resolution, ratio);
 
   logger.info(`使用模型: ${_model} 映射模型: ${model} ${width}x${height} (${ratio}@${resolution}) 时长: ${duration}秒`);
 
@@ -1471,7 +1474,7 @@ export async function submitVideo(
                     v2v_opt: { id: util.uuid(), type: "", generate_from_draft: { id: util.uuid(), type: "", enable: true } },
                   } : {
                     ...(draft ? { is_draft_mode: true } : {}),
-                    duration_ms: duration * 1000,
+                    duration_ms: duration === -1 ? -1 : duration * 1000,
                     first_frame_image: first_frame_image,
                     end_frame_image: end_frame_image,
                     fps: 24,

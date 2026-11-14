@@ -11,7 +11,7 @@ type Task = {
   id: string; historyId: string; credential: string; model: string;
   deleted?: boolean; owner?: string; scope?: string; publicId?: string; publicModel?: string; itemId?: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; created_at: number; updated_at: number;
-  resolution: string; ratio: string; duration: number; seed?: number; framespersecond: number; draft: boolean;
+  taskType?: string; resolution: string; ratio: string; duration: number; seed?: number; framespersecond: number; draft: boolean;
   content?: { video_url: string }; error?: { code: string; message: string };
   callback?: { url: string; pending: { body: any; attempts: number; next: number }[] };
 };
@@ -55,7 +55,7 @@ function view(task: Task, publicId = false) {
     id: publicId ? task.publicId ?? task.id : task.id, model: task.publicModel ?? task.model,
     status: task.status, created_at: task.created_at, updated_at: task.updated_at,
     resolution: task.resolution, ratio: task.ratio, duration: task.duration, seed: task.seed,
-    framespersecond: task.framespersecond, draft: task.draft ?? false, service_tier: 'default',
+    omni_reference_task_type: task.taskType ?? 'auto', framespersecond: task.framespersecond, draft: task.draft ?? false, service_tier: 'default',
     ...(task.content ? { content: task.content } : {}), ...(task.error ? { error: task.error } : {}),
   };
 }
@@ -96,7 +96,7 @@ export async function create(headers: Record<string, string>, body: any) {
       owner: headers['x-flowxy-library-owner'], scope: headers['x-flowxy-task-scope'],
       publicId: headers['x-flowxy-task-public-id'], publicModel: headers['x-flowxy-task-model'],
       status: 'queued', created_at: timestamp, updated_at: timestamp,
-      resolution: input.resolution, ratio: input.ratio, duration: input.duration, seed: input.seed, framespersecond: 24, draft: input.draft,
+      taskType: input.taskType, resolution: input.resolution, ratio: input.ratio, duration: input.duration, seed: input.seed, framespersecond: 24, draft: input.draft,
       ...(body.callback_url ? { callback: { url: body.callback_url, pending: [] } } : {}),
     };
     notify(task);
@@ -129,6 +129,18 @@ async function refresh(task: Task, token: string) {
     }
     url ??= item?.video?.transcoded_video?.origin?.video_url ?? item?.video?.play_url ?? item?.video?.download_url ?? item?.video?.url;
     if (!url) throw new LibraryError(502, 'task.upstream_unavailable', 'Upstream task has no result yet');
+    const video = item?.video;
+    const duration = Number(video?.duration_ms) / 1000 || Number(video?.duration);
+    if (Number.isFinite(duration) && duration > 0) task.duration = Math.ceil(duration);
+    // Adaptive requests must settle against the generated duration, never the -1 sentinel.
+    if (task.duration <= 0) throw new LibraryError(502, 'task.upstream_unavailable', 'Upstream result duration is unavailable');
+    const origin = video?.transcoded_video?.origin ?? video;
+    const width = Number(origin?.width), height = Number(origin?.height);
+    if (width > 0 && height > 0) {
+      const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
+      const divisor = gcd(width, height);
+      task.ratio = `${width / divisor}:${height / divisor}`;
+    }
     task.status = 'succeeded'; task.itemId = itemId ? String(itemId) : undefined;
     task.content = { video_url: url };
   }

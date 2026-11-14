@@ -100,3 +100,33 @@ test('public deletion retains both settlement state and queued callback deliveri
  await loader()('@/api/tasks/service.ts').flushCallbacks();await service.flushCallbacks();
  assert.deepEqual(deliveries.map(d=>[d.id,d.status]),[['fxt-deleted','queued'],['fxt-deleted','failed']]);
 });
+
+test('edit and extend validate Ark constraints and preserve native source indexes', async()=>{
+ const content=[...body.content,{type:'image_url',role:'reference_image',image_url:{url:'https://example.com/frame.png'}},{type:'video_url',role:'reference_video',video_url:{url:'data:video/mp4;base64,AAAAAGZ0eXBpc29t'}}];
+ for(const [taskType,duration] of [['edit',-1],['extend',4]]) {
+  const request={...body,content,ratio:'adaptive',duration,omni_reference_task_type:taskType};
+  const result=await service.create(headers,request);
+  assert.equal(lastOptions.unifiedEditInput[`${taskType}_input`][`${taskType}_from_material_idx`],1);
+  assert.equal(lastOptions.duration,duration);assert.equal(lastOptions.ratio,'adaptive');
+  assert.equal((await service.get(headers,result.id)).omni_reference_task_type,taskType);
+  for(const patch of [{ratio:'16:9'},{content:body.content},{omni_reference_task_type:'invalid'}]) assert.throws(()=>parse({...request,...patch}),e=>e.status===400);
+ }
+ assert.throws(()=>parse({...body,content,ratio:'adaptive',duration:4,omni_reference_task_type:'edit'}),e=>e.status===400);
+ assert.throws(()=>parse({...body,content,ratio:'adaptive',draft:true,omni_reference_task_type:'extend'}),e=>e.status===400);
+ assert.equal(parse({...body,content,ratio:'adaptive',duration:-1,draft:true,omni_reference_task_type:'edit'}).draft,true);
+ const before=submissions;
+ await assert.rejects(service.create(headers,{...body,content:body.content,library_id:'x',references:['missing'],ratio:'adaptive',duration:4,omni_reference_task_type:'extend'}),e=>e.status===403);
+ assert.equal(submissions,before);
+});
+
+test('adaptive task duration cannot become a negative or fabricated settlement',async()=>{
+ const request={...body,content:[...body.content,{type:'video_url',role:'reference_video',video_url:{url:'data:video/mp4;base64,AAAAAGZ0eXBpc29t'}}],ratio:'adaptive',duration:-1,omni_reference_task_type:'edit'};
+ history={status:20};
+ const created=await service.create(headers,request);
+ history={status:50,item_list:[{video:{play_url:'https://example.com/edited.mp4'}}]};
+ await assert.rejects(service.get(headers,created.id),e=>e.status===502);
+ history.item_list[0].video.duration_ms=4200;
+ history.item_list[0].video.transcoded_video={origin:{width:1280,height:720}};
+ const done=await service.get(headers,created.id);
+ assert.equal(done.duration,5);assert.equal(done.ratio,'16:9');assert.equal(done.status,'succeeded');
+});

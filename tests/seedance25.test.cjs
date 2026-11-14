@@ -210,3 +210,12 @@ test('draft finalization retains native parent inputs and the draft billing bene
   assert.equal(input.origin_history_id,'history');assert.equal(input.v2v_opt.generate_from_draft.enable,true);
   assert.equal(draft.component_list[0].abilities.gen_video.text_to_video_params.video_gen_inputs[0].is_draft_mode,undefined);
 });
+
+test('native edit preserves the adaptive sentinel in milliseconds instead of multiplying it', async()=>{
+ const {exports,calls,stopped}=controller();
+ const unifiedEditInput={material_list:[{material_type:'video',video_info:{vid:'source',duration:4000}}],edit_input:{enable:true,edit_from_material_idx:0}};
+ await assert.rejects(exports.submitVideo(model,'Edit the lighting',{ratio:'adaptive',duration:-1,resolution:'480p',unifiedEditInput},'token'),e=>e===stopped);
+ const params=JSON.parse(calls[0][3].data.draft_content).component_list[0].abilities.gen_video.text_to_video_params;
+ assert.equal(params.video_aspect_ratio,'adaptive');assert.equal(params.video_gen_inputs[0].duration_ms,-1);
+ assert.equal(params.video_gen_inputs[0].unified_edit_input.edit_input.edit_from_material_idx,0);
+});
