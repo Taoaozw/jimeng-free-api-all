@@ -7,14 +7,16 @@ const ts=require('typescript');
 const vm=require('node:vm');
 const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'dreamina-tasks-'));
 Object.assign(process.env,{JIMENG_LIBRARY_DIR:temporary,JIMENG_LIBRARY_ACCOUNT:'account-a',JIMENG_API_KEY:'private-key',JIMENG_ACCOUNT_TOKEN:'secret-token'});
-let submitError,history={status:20},submissions=0,lastOptions,queue=2,cancelError,deliveries=[];
+let submitError,history={status:20},submissions=0,lastOptions,queue=2,cancelError,outputError,deliveries=[];
 const mocks={
+ '@/api/tasks/output.ts':{videoOutput:async item=>{if(outputError)throw outputError;return item?.video?.play_url??'https://example.com/result.mp4'}},
  '@/api/tasks/callback.ts':{destination:async value=>{if(!value.startsWith('https://')) load('@/api/library/store.ts').invalid('Invalid callback')},deliver:async(url,body)=>deliveries.push(body)},
  '@/api/controllers/core.ts':{tokenSplit:s=>s.replace(/^Bearer /,'').split(','),request:async(method,url)=>{if(url.includes('cancel_generate')) {if(cancelError) throw cancelError; return {}};return url.includes('queue_info')?{'native-id':{queue_info:{queue_status:queue}}}:{'native-id':history}}},
  '@/api/controllers/videos.ts':{submitVideo:async(m,p,o)=>{submissions++;lastOptions=o;if(submitError)throw submitError;return 'native-id'},fetchHighQualityVideoUrl:async()=>null,uploadImageForVideo:async()=> 'image-uri',uploadMediaForVideo:async()=>({vid:'vid',duration:4000})},
 };
 function loader(){const cache=new Map();return function load(filename){
  if(mocks[filename])return mocks[filename];
+ if(filename.endsWith('/tasks/output.ts'))return mocks['@/api/tasks/output.ts'];
  if(filename.endsWith('/tasks/callback.ts'))return mocks['@/api/tasks/callback.ts'];
  const absolute=filename.startsWith('@/')?path.resolve(__dirname,'../src',filename.slice(2)):filename;
  if(cache.has(absolute))return cache.get(absolute);
@@ -129,4 +131,29 @@ test('adaptive task duration cannot become a negative or fabricated settlement',
  history.item_list[0].video.transcoded_video={origin:{width:854,height:480}};
  const done=await service.get(headers,created.id);
  assert.equal(done.duration,5);assert.equal(done.ratio,'16:9');assert.equal(done.status,'succeeded');
+});
+
+
+test('watermark selection persists through reload and never silently falls back',async()=>{
+ history={status:50,item_list:[{item_id:'watermark-item',video:{video_id:'vid',play_url:'https://example.com/preview.mp4'}}]};
+ for(const watermark of [false,true]) {
+  const created=await service.create(headers,{...body,watermark});
+  const done=await loader()('@/api/tasks/service.ts').get(headers,created.id);
+  assert.equal(done.watermark,watermark);assert.equal(done.status,'succeeded');
+ }
+ assert.equal(parse(body).watermark,false);
+ assert.throws(()=>parse({...body,watermark:'false'}),e=>e.status===400);
+ const created=await service.create(headers,{...body,watermark:false,callback_url:'https://callback.example/output'});
+ outputError=new (load('@/api/library/store.ts').LibraryError)(502,'task.output_unavailable','Requested variant unavailable');
+ const failed=await service.get(headers,created.id);outputError=undefined;
+ assert.equal(failed.status,'failed');assert.equal(failed.error.code,'task.output_unavailable');assert.equal(failed.content,undefined);
+ assert.equal((await loader()('@/api/tasks/service.ts').get(headers,created.id)).status,'failed');
+});
+
+
+test('incomplete history remains retryable before selecting an output variant',async()=>{
+ const created=await service.create(headers,body);history={status:50,item_list:[]};
+ await assert.rejects(service.get(headers,created.id),e=>e.code==='task.upstream_unavailable');
+ history={status:50,item_list:[{video:{play_url:'https://example.com/result.mp4'}}]};
+ assert.equal((await service.get(headers,created.id)).status,'succeeded');
 });

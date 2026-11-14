@@ -6,12 +6,13 @@ import { submitVideo, fetchHighQualityVideoUrl } from '@/api/controllers/videos.
 import { libraryStore, LibraryError, invalid } from '@/api/library/store.ts';
 import { parseInput, generationOptions } from './input.ts';
 import { destination, deliver } from './callback.ts';
+import { videoOutput } from './output.ts';
 
 type Task = {
   id: string; historyId: string; credential: string; model: string;
   deleted?: boolean; owner?: string; scope?: string; publicId?: string; publicModel?: string; itemId?: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; created_at: number; updated_at: number;
-  taskType?: string; resolution: string; ratio: string; duration: number; seed?: number; framespersecond: number; draft: boolean;
+  watermark?: boolean; taskType?: string; resolution: string; ratio: string; duration: number; seed?: number; framespersecond: number; draft: boolean;
   content?: { video_url: string }; error?: { code: string; message: string };
   callback?: { url: string; pending: { body: any; attempts: number; next: number }[] };
 };
@@ -56,6 +57,7 @@ function view(task: Task, publicId = false) {
     status: task.status, created_at: task.created_at, updated_at: task.updated_at,
     resolution: task.resolution, ratio: task.ratio, duration: task.duration, seed: task.seed,
     omni_reference_task_type: task.taskType ?? 'auto', framespersecond: task.framespersecond, draft: task.draft ?? false, service_tier: 'default',
+    ...(task.watermark !== undefined ? { watermark: task.watermark } : {}),
     ...(task.content ? { content: task.content } : {}), ...(task.error ? { error: task.error } : {}),
   };
 }
@@ -96,7 +98,7 @@ export async function create(headers: Record<string, string>, body: any) {
       owner: headers['x-flowxy-library-owner'], scope: headers['x-flowxy-task-scope'],
       publicId: headers['x-flowxy-task-public-id'], publicModel: headers['x-flowxy-task-model'],
       status: 'queued', created_at: timestamp, updated_at: timestamp,
-      taskType: input.taskType, resolution: input.resolution, ratio: input.ratio, duration: input.duration, seed: input.seed, framespersecond: 24, draft: input.draft,
+      watermark: input.watermark, taskType: input.taskType, resolution: input.resolution, ratio: input.ratio, duration: input.duration, seed: input.seed, framespersecond: 24, draft: input.draft,
       ...(body.callback_url ? { callback: { url: body.callback_url, pending: [] } } : {}),
     };
     notify(task);
@@ -123,7 +125,17 @@ async function refresh(task: Task, token: string) {
     const item = history.item_list?.[0];
     const itemId = item?.item_id ?? item?.id ?? item?.local_item_id ?? item?.common_attr?.id;
     let url: string | null = null;
-    if (itemId) {
+    if (task.watermark !== undefined) {
+      if (history.status !== 50 || !item?.video) throw new LibraryError(502, 'task.upstream_unavailable', 'Upstream video is not ready');
+      try { url = await videoOutput(item, task.watermark, token); }
+      catch (error) {
+        if (error.code !== 'task.output_unavailable') throw error;
+        task.status = 'failed'; task.error = { code: error.code, message: error.message };
+        task.updated_at = now(); notify(task);
+        return;
+      }
+    }
+    else if (itemId) {
       try { url = await fetchHighQualityVideoUrl(String(itemId), token); }
       catch { /* Preview URLs remain usable when the download endpoint is temporarily unavailable. */ }
     }

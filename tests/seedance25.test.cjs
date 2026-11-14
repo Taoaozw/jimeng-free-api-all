@@ -181,6 +181,9 @@ test('Dreamina HTTP 200 business errors become HTTP 502 while numeric and string
     '@/lib/x-bogus.ts':{},'@/lib/x-gnarly.ts':{},
   });
   for(const ret of ['0',0]) assert.equal(checkResult({status:200,data:{ret,data:'ok'}}),'ok');
+  const flat={ret:0,vid2video:{vid:{origin_video:{video_url:'https://example.com/raw.mp4'}}}};
+  assert.equal(checkResult({status:200,data:flat}),flat);
+  assert.equal(checkResult({status:200,data:{ret:0,data:null}}),null);
   for(const ret of ['2001',2001,'5000',5000]) assert.throws(()=>checkResult({status:200,data:{ret,errmsg:'rejected'}}),e=>e.httpStatusCode===502);
 });
 

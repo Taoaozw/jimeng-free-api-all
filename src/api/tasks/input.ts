@@ -8,7 +8,11 @@ import { decodeUpload } from '@/api/library/media.ts';
 
 export function parseInput(body: any) {
   if (!body || body.model !== 'jimeng-video-seedance-2.5') invalid('This adapter supports jimeng-video-seedance-2.5');
-  const allowed = new Set(['model', 'content', 'ratio', 'resolution', 'duration', 'seed', 'library_id', 'references', 'draft', 'callback_url', 'omni_reference_task_type']);
+  const allowed = new Set(['model', 'content', 'ratio', 'resolution', 'duration', 'seed', 'library_id', 'references', 'draft', 'callback_url', 'omni_reference_task_type', 'watermark']);
+  if (body.generate_audio !== undefined) invalid('Dreamina video generation has no native generate_audio toggle; reference_audio is supported');
+  if (body.return_last_frame !== undefined) invalid('Dreamina has no native output last-frame endpoint; input last_frame is supported');
+  if (body.watermark !== undefined && typeof body.watermark !== 'boolean') invalid('watermark must be boolean');
+  const watermark = body.watermark ?? false;
   for (const key of Object.keys(body)) if (!allowed.has(key)) invalid(`Unsupported parameter: ${key}`);
   if (body.draft !== undefined && typeof body.draft !== 'boolean') invalid('draft must be boolean');
   const taskType = body.omni_reference_task_type ?? 'auto';
@@ -19,7 +23,7 @@ export function parseInput(body: any) {
     if (body.content.length !== 1 || typeof draftTask.draft_task?.id !== 'string') invalid('draft_task must be the only content item');
     if (body.draft === true || (body.resolution !== undefined && body.resolution !== '1080p')) invalid('Final video requires draft=false and resolution=1080p');
     for (const key of ['ratio', 'duration', 'seed', 'library_id', 'references', 'omni_reference_task_type']) if (body[key] !== undefined) invalid(`Draft finalization inherits ${key}`);
-    return { model: body.model as string, prompt: '', ratio: '16:9', resolution: '1080p', duration: 5, seed: undefined, filePaths: [], references: [], taskType: 'auto' as string, draft: false, draftTaskId: draftTask.draft_task.id as string };
+    return { watermark, model: body.model as string, prompt: '', ratio: '16:9', resolution: '1080p', duration: 5, seed: undefined, filePaths: [], references: [], taskType: 'auto' as string, draft: false, draftTaskId: draftTask.draft_task.id as string };
   }
   const ratio = body.ratio ?? '16:9', resolution = body.resolution ?? (body.draft ? '480p' : '720p'), duration = body.duration ?? 5;
   if (!['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', ...(transformsVideo ? ['adaptive'] : [])].includes(ratio)) invalid('Unsupported ratio');
@@ -62,7 +66,7 @@ export function parseInput(body: any) {
   }
   if (transformsVideo && (filePaths.length || (!references.some(r => r.kind === 'video') && body.library_id === undefined))) invalid('edit and extend require a reference_video');
   if (taskType === 'edit' && prompt.length > 2000) invalid('Video edit prompt exceeds 2000 characters');
-  return { taskType, model: body.model as string, prompt, ratio, resolution, duration, seed: body.seed === -1 ? undefined : body.seed, filePaths, references, draft: body.draft === true, draftTaskId: undefined as string | undefined };
+  return { watermark, taskType, model: body.model as string, prompt, ratio, resolution, duration, seed: body.seed === -1 ? undefined : body.seed, filePaths, references, draft: body.draft === true, draftTaskId: undefined as string | undefined };
 }
 
 export async function generationOptions(input: ReturnType<typeof parseInput>, body: any, headers: Record<string, string>, token: string) {

@@ -560,7 +560,8 @@ export async function uploadFile(
 export function checkResult(result: AxiosResponse) {
   const { ret, errmsg, data } = result.data;
   if (!_.isFinite(Number(ret))) return result.data;
-  if (Number(ret) === 0) return data;
+  // Video resource lookup returns vid2video at the root rather than inside data.
+  if (Number(ret) === 0) return Object.prototype.hasOwnProperty.call(result.data, "data") ? data : result.data;
   if (Number(ret) === 5000)
     throw new APIException(EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS, `[无法生成图像]: 即梦积分可能不足，${errmsg}`).setHTTPStatusCode(502);
   throw new APIException(EX.API_REQUEST_FAILED, `[请求jimeng失败]: ${errmsg}`).setHTTPStatusCode(502);
