@@ -456,7 +456,7 @@ function calculateCRC32(buffer: ArrayBuffer): string {
 }
 
 // 视频专用图片上传功能（基于 images.ts 的 uploadImageFromUrl）
-async function uploadImageForVideo(imageUrl: string, refreshToken: string, regionInfo?: import("./core.ts").RegionInfo): Promise<string> {
+export async function uploadImageForVideo(imageUrl: string, refreshToken: string, regionInfo?: import("./core.ts").RegionInfo): Promise<string> {
   try {
     logger.info(`开始上传视频图片: ${imageUrl}`);
 
@@ -1102,7 +1102,7 @@ export async function uploadMediaForVideo(
  * @param refreshToken 刷新令牌
  * @returns 高质量视频URL，失败时返回 null
  */
-async function fetchHighQualityVideoUrl(itemId: string, refreshToken: string): Promise<string | null> {
+export async function fetchHighQualityVideoUrl(itemId: string, refreshToken: string): Promise<string | null> {
   try {
     logger.info(`尝试获取高质量视频下载URL，item_id: ${itemId}`);
 
@@ -1183,6 +1183,16 @@ async function fetchHighQualityVideoUrl(itemId: string, refreshToken: string): P
  * @returns 视频URL
  */
 export async function generateVideo(
+  model: string,
+  prompt: string,
+  options: Parameters<typeof submitVideo>[2],
+  refreshToken: string,
+) {
+  const historyId = await submitVideo(model, prompt, options, refreshToken);
+  return pollVideo(historyId, refreshToken);
+}
+
+export async function submitVideo(
   _model: string,
   prompt: string,
   {
@@ -1509,6 +1519,10 @@ export async function generateVideo(
   if (!historyId)
     throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "记录ID不存在");
 
+  return String(historyId);
+}
+
+async function pollVideo(historyId: string, refreshToken: string) {
   // 轮询获取结果
   let status = 20, failCode, item_list = [];
   let retryCount = 0;

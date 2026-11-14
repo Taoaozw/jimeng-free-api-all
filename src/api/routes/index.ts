@@ -9,6 +9,7 @@ import models from './models.ts';
 import videos from './videos.ts';
 import video from './video.ts';
 import library from './library.ts';
+import tasks from './tasks.ts';
 
 export default [
     {
@@ -31,5 +32,6 @@ export default [
     models,
     videos,
     library,
+    tasks,
     video
 ];
