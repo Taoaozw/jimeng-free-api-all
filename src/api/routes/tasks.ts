@@ -17,6 +17,6 @@ const handle = (fn: (req: Request) => Promise<any>) => async (req: Request) => {
 export default {
   prefix: '/v1/contents/generations/tasks',
   post: { '': handle(req => tasks.create(req.headers, req.body)) },
-  get: { '/:id': handle(req => tasks.get(req.headers, req.params.id)) },
+  get: { '': handle(req => tasks.list(req.headers, req.query)), '/:id': handle(req => tasks.get(req.headers, req.params.id)) },
   delete: { '/:id': handle(req => tasks.remove(req.headers, req.params.id)) },
 };

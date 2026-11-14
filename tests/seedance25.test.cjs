@@ -196,3 +196,17 @@ test('terminal generation rejection preserves the upstream failure code', async(
  await assert.rejects(exports.generateVideo(model,'Test',{duration:4},'test-token'),e=>e.httpStatusCode===502 && e.message.includes('2052'));
  assert.equal(calls,2);
 });
+
+test('draft finalization retains native parent inputs and the draft billing benefit', async () => {
+  const { exports, calls, stopped } = controller();
+  const parent={id:'source',process_type:1,abilities:{gen_video:{text_to_video_params:{model_req_key:'dreamina_seedance_45_pro_draft',video_gen_inputs:[{is_draft_mode:true,duration_ms:4000,unified_edit_input:{material_list:[{material_type:'video'}]}}]}}}};
+  await assert.rejects(exports.submitVideo(model,'',{duration:4,resolution:'1080p',draftSource:{historyId:'history',itemId:'item',draftContent:JSON.stringify({main_component_id:'source',component_list:[parent]})}},'token'), e=>e===stopped);
+  const payload=calls[0][3].data,draft=JSON.parse(payload.draft_content),final=draft.component_list[1];
+  assert.equal(payload.extend.root_model,'dreamina_seedance_45_pro_draft');
+  assert.equal(payload.extend.m_video_commerce_info.benefit_type,'seedance_25_draft_1080p_output');
+  assert.equal(final.parent_id,'source');assert.equal(final.process_type,15);
+  assert.equal(final.abilities.gen_video.text_to_video_params.model_req_key,undefined);
+  const input=final.abilities.gen_video.text_to_video_params.video_gen_inputs[0];
+  assert.equal(input.origin_history_id,'history');assert.equal(input.v2v_opt.generate_from_draft.enable,true);
+  assert.equal(draft.component_list[0].abilities.gen_video.text_to_video_params.video_gen_inputs[0].is_draft_mode,undefined);
+});

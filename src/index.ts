@@ -7,6 +7,8 @@ import server from "@/lib/server.ts";
 import routes from "@/api/routes/index.ts";
 import logger from "@/lib/logger.ts";
 
+import { startCallbacks } from "@/api/tasks/service.ts";
+
 const startupTime = performance.now();
 
 (async () => {
@@ -20,6 +22,7 @@ const startupTime = performance.now();
 
   server.attachRoutes(routes);
   await server.listen();
+  startCallbacks();
 
   config.service.bindAddress &&
     logger.success("Service bind address:", config.service.bindAddress);

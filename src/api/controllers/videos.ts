@@ -1200,6 +1200,8 @@ export async function submitVideo(
     resolution = "720p",
     duration = 5,
     seed,
+    draft = false,
+    draftSource,
     unifiedEditInput,
     filePaths = [],
     files = [],
@@ -1208,13 +1210,15 @@ export async function submitVideo(
     resolution?: string;
     duration?: number;
     seed?: number;
+    draft?: boolean;
+    draftSource?: { historyId: string; itemId: string; draftContent: string };
     unifiedEditInput?: any;
     filePaths?: string[];
     files?: any[];
   },
   refreshToken: string
 ) {
-  const model = getModel(_model);
+  const model = (draft || draftSource) ? "dreamina_seedance_45_pro_draft" : getModel(_model);
 
   if (_model === "jimeng-video-seedance-2.5") {
     resolution = resolution.toLowerCase();
@@ -1418,46 +1422,17 @@ export async function submitVideo(
   });
   
   // 获取当前模型的 draft 版本
-  const draftVersion = unifiedEditInput ? "3.3.39" : MODEL_DRAFT_VERSIONS[_model] || DEFAULT_DRAFT_VERSION;
+  const draftVersion = (unifiedEditInput || draft || draftSource) ? "3.3.39" : MODEL_DRAFT_VERSIONS[_model] || DEFAULT_DRAFT_VERSION;
   
   // 计算视频宽高比
   const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
   const divisor = gcd(width, height);
   const aspectRatio = _model === "jimeng-video-seedance-2.5" ? ratio : `${width / divisor}:${height / divisor}`;
   
-  // 构建请求参数
-  const { aigc_data } = await request(
-    "post",
-    "/mweb/v1/aigc_draft/generate",
-    refreshToken,
-    {
-      params: {
-        aigc_features: "app_lip_sync",
-        web_version: "6.6.0",
-        da_version: draftVersion,
-      },
-      data: {
-        "extend": {
-          "root_model": end_frame_image && _model !== "jimeng-video-seedance-2.5" ? MODEL_MAP['jimeng-video-3.0'] : model,
-          "m_video_commerce_info": {
-            benefit_type: _model === "jimeng-video-seedance-2.5" ? "" : "basic_video_operation_vgfm_v_three",
-            resource_id: "generate_video",
-            resource_id_type: "str",
-            resource_sub_type: "aigc"
-          },
-          "m_video_commerce_info_list": [{
-            benefit_type: _model === "jimeng-video-seedance-2.5" ? "" : "basic_video_operation_vgfm_v_three",
-            resource_id: "generate_video",
-            resource_id_type: "str",
-            resource_sub_type: "aigc"
-          }]
-        },
-        "submit_id": util.uuid(),
-        "metrics_extra": metricsExtra,
-        "draft_content": JSON.stringify({
+  let draftContent = {
           "type": "draft",
           "id": util.uuid(),
-          "min_version": unifiedEditInput ? "3.3.39" : "3.0.5",
+          "min_version": (unifiedEditInput || draft || draftSource) ? "3.3.39" : "3.0.5",
           ...(unifiedEditInput ? { min_features: ["AIGC_Video_UnifiedEdit", "AIGC_UnifiedEditSubject", "AIGC_UnifiedEditSubject_v2", "AIGC_Video_Seedance25ResultAction"] } : {}),
           "is_from_tsn": true,
           "version": draftVersion,
@@ -1476,6 +1451,7 @@ export async function submitVideo(
             },
             "generate_type": "gen_video",
             "aigc_mode": "workbench",
+            ...(draftSource ? { process_type: 15 } : {}),
             "abilities": {
               "type": "",
               "id": util.uuid(),
@@ -1489,7 +1465,12 @@ export async function submitVideo(
                   "priority": 0,
                   "seed": seed ?? Math.floor(Math.random() * 100000000) + 2500000000,
                   "video_aspect_ratio": aspectRatio,
-                  "video_gen_inputs": [{
+                  "video_gen_inputs": [draftSource ? {
+                    id: util.uuid(), type: "", min_version: "3.3.39",
+                    origin_history_id: draftSource.historyId, resolution,
+                    v2v_opt: { id: util.uuid(), type: "", generate_from_draft: { id: util.uuid(), type: "", enable: true } },
+                  } : {
+                    ...(draft ? { is_draft_mode: true } : {}),
                     duration_ms: duration * 1000,
                     first_frame_image: first_frame_image,
                     end_frame_image: end_frame_image,
@@ -1504,10 +1485,63 @@ export async function submitVideo(
                   }]
                 },
                 "video_task_extra": metricsExtra,
+                ...(draftSource ? { video_ref_params: { id: util.uuid(), type: "", generate_type: "gen_video", item_id: draftSource.itemId, origin_history_id: draftSource.historyId } } : {}),
               }
             }
           }],
-        }),
+        };
+  if (draftSource) {
+    const original = JSON.parse(draftSource.draftContent);
+    if (!original.main_component_id || !Array.isArray(original.component_list)) throw new Error("Draft source content is unavailable");
+    const component: any = draftContent.component_list[0];
+    component.parent_id = original.main_component_id;
+    const params = component.abilities.gen_video.text_to_video_params;
+    for (const key of ["model_req_key", "priority", "seed", "video_aspect_ratio"]) delete params[key];
+    delete component.abilities.gen_video.video_ref_params.generate_type;
+    // Native post-processing retains the original component chain to inherit model and reference inputs.
+    for (const parent of original.component_list) {
+      for (const input of parent.abilities?.gen_video?.text_to_video_params?.video_gen_inputs ?? []) delete input.is_draft_mode;
+    }
+    draftContent = { ...original, id: util.uuid(), main_component_id: componentId, component_list: [...original.component_list, component] };
+  }
+
+  const hasVideoReference = draftSource
+    ? JSON.stringify(draftContent).includes('"material_type":"video"')
+    : (unifiedEditInput?.material_list ?? []).some((item: any) => item.material_type === "video");
+  const draftBenefit = (draft || draftSource)
+    ? `seedance_25_draft_${resolution}_${hasVideoReference ? "" : "no_input_video_"}output`
+    : "";
+
+  // 构建请求参数
+  const { aigc_data } = await request(
+    "post",
+    "/mweb/v1/aigc_draft/generate",
+    refreshToken,
+    {
+      params: {
+        aigc_features: "app_lip_sync",
+        web_version: "6.6.0",
+        da_version: draftVersion,
+      },
+      data: {
+        "extend": {
+          "root_model": end_frame_image && _model !== "jimeng-video-seedance-2.5" ? MODEL_MAP['jimeng-video-3.0'] : model,
+          "m_video_commerce_info": {
+            benefit_type: _model === "jimeng-video-seedance-2.5" ? draftBenefit : "basic_video_operation_vgfm_v_three",
+            resource_id: "generate_video",
+            resource_id_type: "str",
+            resource_sub_type: "aigc"
+          },
+          "m_video_commerce_info_list": [{
+            benefit_type: _model === "jimeng-video-seedance-2.5" ? draftBenefit : "basic_video_operation_vgfm_v_three",
+            resource_id: "generate_video",
+            resource_id_type: "str",
+            resource_sub_type: "aigc"
+          }]
+        },
+        "submit_id": util.uuid(),
+        "metrics_extra": metricsExtra,
+        "draft_content": JSON.stringify(draftContent),
         http_common_info: {
           aid: DEFAULT_ASSISTANT_ID,
         },
